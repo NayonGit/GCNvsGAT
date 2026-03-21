@@ -164,7 +164,7 @@ def load_data(path="./cora/cora/", return_raw_adj=False):
     
     # Normalizations
     adj_norm = normalize_adjacency(adj)
-    adj_gat = (adj + sp.eye(adj.shape[0])).todense()
+    adj_gat = adj + sp.eye(adj.shape[0])
 
 
     if return_raw_adj:

@@ -3,10 +3,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class MLP(nn.Module):
-    def __init__(self, n_features, n_hidden, n_classes, dropout):
+    def __init__(self, nfeat, nhid, n_classes, dropout):
         super(MLP, self).__init__()
-        self.fc1 = nn.Linear(n_features, n_hidden)
-        self.fc2 = nn.Linear(n_hidden, n_classes)
+        self.fc1 = nn.Linear(nfeat, nhid)
+        self.fc2 = nn.Linear(nhid, n_classes)
         self.dropout = dropout
 
     def forward(self, x):
@@ -32,10 +32,10 @@ class GCNLayer(nn.Module):
         return x
 
 class GCN(nn.Module):
-    def __init__(self, n_features, n_hidden, n_classes, dropout):
+    def __init__(self, nfeat, nhid, n_classes, dropout):
         super(GCN, self).__init__()
-        self.layer1 = GCNLayer(n_features, n_hidden)
-        self.layer2 = GCNLayer(n_hidden, n_classes)
+        self.layer1 = GCNLayer(nfeat, nhid)
+        self.layer2 = GCNLayer(nhid, n_classes)
         self.dropout = dropout
 
     def forward(self, x, adj_norm):
@@ -55,7 +55,6 @@ class GATLayer(nn.Module):
         self.concat = concat
 
         self.W = nn.Linear(in_features, out_features, bias=False)
-        # Attention vector split in two: for source and target
         self.a1 = nn.Parameter(torch.empty(size=(out_features, 1)))
         self.a2 = nn.Parameter(torch.empty(size=(out_features, 1)))
         
@@ -64,26 +63,46 @@ class GATLayer(nn.Module):
         self.leakyrelu = nn.LeakyReLU(self.alpha)
 
     def forward(self, h, adj):
+        """
+        h: [N, in_features]
+        adj: Sparse COO Tensor (must have .indices())
+        """
         Wh = self.W(h) # [N, out_features]
-        
-        # Compute attention scores e
-        # f1: score for nodes as 'source', f2: score for nodes as 'target'
-        f1 = torch.matmul(Wh, self.a1) # [N, 1]
-        f2 = torch.matmul(Wh, self.a2) # [N, 1]
-        
-        # Broadcast sum to get all-pairs combinations: e_ij = LeakyReLU(a1*Wh_i + a2*Wh_j)
-        e = self.leakyrelu(f1 + f2.T) # [N, N]
+        N = Wh.size(0)
 
-        # Masking (Exactly like your notebook)
-        zero_vec = -9e15 * torch.ones_like(e)
-        attention = torch.where(adj > 0, e, zero_vec)
-        
-        # Normalization
-        attention = F.softmax(attention, dim=1)
-        attention = F.dropout(attention, self.dropout, training=self.training)
+        # Extract edge indices (row -> source, col -> target)
+        indices = adj.indices() # [2, E]
+        row, col = indices[0], indices[1]
 
-        # Aggregation
-        h_prime = torch.matmul(attention, Wh)
+        # Compute scores per node
+        f1 = torch.matmul(Wh, self.a1).squeeze() # [N]
+        f2 = torch.matmul(Wh, self.a2).squeeze() # [N]
+
+        # Compute edge scores e_ij for existing edges only
+        # f1[row] gives the score for the source of each edge
+        # f2[col] gives the score for the target of each edge
+        edge_e = self.leakyrelu(f1[row] + f2[col]) # [E]
+        
+        # Sparse Softmax (over neighbors)
+        # We need to compute exp(e_ij) and divide by the sum of exp for each target node
+        edge_e_exp = torch.exp(edge_e - torch.max(edge_e)) # [E]
+        
+        # Summing exponentials per target node (row)
+        # We use index_add to accumulate exp values into a buffer of size N
+        exp_sum = torch.zeros((N,), device=h.device)
+        exp_sum.index_add_(0, row, edge_e_exp) # Accumulate sum for each row i
+        
+        # Calculate attention coefficients alpha_ij
+        # Adding a tiny epsilon to avoid division by zero
+        alpha = edge_e_exp / (exp_sum[row] + 1e-10) # [E]
+        alpha = F.dropout(alpha, self.dropout, training=self.training)
+
+        # Aggregation (Summing alpha_ij * Wh_j)
+        # We multiply Wh by alpha for each edge, then accumulate back to source nodes
+        weighted_Wh = Wh[col] * alpha.view(-1, 1) # [E, out_features]
+        
+        h_prime = torch.zeros((N, self.out_features), device=h.device)
+        h_prime.index_add_(0, row, weighted_Wh) # [N, out_features]
 
         if self.concat:
             return F.elu(h_prime)
@@ -91,25 +110,38 @@ class GATLayer(nn.Module):
             return h_prime
 
 class GAT(nn.Module):
-    def __init__(self, nfeat, nhid, nclass, dropout, alpha, nheads):
+    def __init__(self, nfeat, nhid, nclass, dropout, alpha, nheads, is_pubmed=False):
         super(GAT, self).__init__()
         self.dropout = dropout
+        self.is_pubmed = is_pubmed
 
         self.attentions = nn.ModuleList([
             GATLayer(nfeat, nhid, dropout=dropout, alpha=alpha, concat=True) 
             for _ in range(nheads)
         ])
 
-        # Output layer
-        self.out_att = GATLayer(nhid * nheads, nclass, dropout=dropout, alpha=alpha, concat=False)
+        if self.is_pubmed:
+            # Paper uses 8 heads averaged for output on Pubmed
+            self.out_attentions = nn.ModuleList([
+                GATLayer(nhid * nheads, nclass, dropout=dropout, alpha=alpha, concat=False) 
+                for _ in range(nheads)
+            ])
+        else:
+            self.out_att = GATLayer(nhid * nheads, nclass, dropout=dropout, alpha=alpha, concat=False)
 
     def forward(self, x, adj):
         x = F.dropout(x, self.dropout, training=self.training)
+        
         # Multi-head concat
         x = torch.cat([att(x, adj) for att in self.attentions], dim=1)
         x = F.dropout(x, self.dropout, training=self.training)
-        # Output log_softmax
-        x = self.out_att(x, adj)
+
+        if self.is_pubmed:
+            out = torch.stack([att(x, adj) for att in self.out_attentions], dim=0)
+            x = torch.mean(out, dim=0)
+        else:
+            x = self.out_att(x, adj)
+
         return F.log_softmax(x, dim=1)
 
 # this function is used to modify freely the architecture of the GAT model

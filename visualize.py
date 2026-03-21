@@ -1,6 +1,7 @@
 import torch
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
+import os
 import seaborn as sns
 import json
 import numpy as np
@@ -12,11 +13,14 @@ from utils import load_data
 from train import sparse_mx_to_torch_sparse_tensor
 
 
-def plot_metrics_from_json(model_name):
+def plot_metrics_from_json(file_path):
     """
     Loads the history from a JSON file and displays Accuracy and Loss curves.
     """
-    file_path = f'history_{model_name.lower()}.json'
+    filename = os.path.basename(file_path)
+    parts = filename.replace('.json', '').split('_')
+    model_name = parts[1].upper() if len(parts) > 1 else "Unknown"
+    dataset = parts[2].upper() if len(parts) > 1 else "Unknown"
     try:
         with open(file_path, 'r') as f:
             h = json.load(f)
@@ -29,7 +33,7 @@ def plot_metrics_from_json(model_name):
     # Accuracy
     ax[0].plot(h['train_acc'], label='Train Acc', color='blue')
     ax[0].plot(h['val_acc'], label='Val Acc', color='orange')
-    ax[0].set_title(f'Accuracy Evolution - {model_name.upper()}')
+    ax[0].set_title(f'Accuracy Evolution - {model_name.upper()} - {dataset}')
     ax[0].set_xlabel('Epochs')
     ax[0].set_ylabel('Accuracy')
     ax[0].legend()
@@ -38,7 +42,7 @@ def plot_metrics_from_json(model_name):
     # Loss
     ax[1].plot(h['train_loss'], label='Train Loss', color='blue')
     ax[1].plot(h['val_loss'], label='Val Loss', color='orange')
-    ax[1].set_title(f'Loss Evolution - {model_name.upper()}')
+    ax[1].set_title(f'Loss Evolution - {model_name.upper()} - {dataset}')
     ax[1].set_xlabel('Epochs')
     ax[1].set_ylabel('Loss')
     ax[1].legend()
@@ -47,7 +51,7 @@ def plot_metrics_from_json(model_name):
     plt.tight_layout()
     plt.show()
 
-def show_confusion_matrix(model, features, labels, mask, model_name, adj=None):
+def show_confusion_matrix(model, features, labels, mask, model_name, adj=None, dataset = "Cora"):
     model.eval()
     
     if adj is not None and sp.issparse(adj):
@@ -74,21 +78,15 @@ def show_confusion_matrix(model, features, labels, mask, model_name, adj=None):
     sns.heatmap(cm, annot=True, fmt='d', cmap='Blues')
     plt.xlabel('Predicted Label')
     plt.ylabel('True Label')
-    plt.title(f'Confusion Matrix - {model_name.upper()}')
+    plt.title(f'Confusion Matrix - {model_name.upper()} - {dataset}')
     plt.show()
 
-def visualize_tsne(model, features, labels, model_name, adj=None):
+def visualize_tsne(model, features, labels, model_name, adj=None, dataset = "Cora"):
     model.eval()
     
-    # Conversion automatique
-    if adj is not None and sp.issparse(adj):
-        # Pour GCN, on garde le format sparse
-        if model_name.upper() == 'GCN':
-            adj = sparse_mx_to_torch_sparse_tensor(adj)
-        # Pour GAT, on passe en dense car ton implémentation l'attend ainsi
-        elif model_name.upper() == 'GAT':
-            adj = torch.FloatTensor(adj.todense())
-    
+    if adj is not None :
+        adj = sparse_mx_to_torch_sparse_tensor(adj)
+        
     with torch.no_grad():
         if model_name.upper() == 'MLP':
             x = model.fc1(features)
@@ -108,5 +106,5 @@ def visualize_tsne(model, features, labels, model_name, adj=None):
     scatter = plt.scatter(out[:, 0], out[:, 1], c=labels.cpu().numpy(), 
                           cmap='rainbow', s=30, alpha=0.7)
     plt.colorbar(scatter)
-    plt.title(f"t-SNE Embeddings - {model_name.upper()}")
+    plt.title(f"t-SNE Embeddings - {model_name.upper()} - {dataset}")
     plt.show()

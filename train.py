@@ -18,7 +18,7 @@ def sparse_mx_to_torch_sparse_tensor(sparse_mx):
     )
     values = torch.from_numpy(sparse_mx.data)
     shape = torch.Size(sparse_mx.shape)
-    return torch.sparse_coo_tensor(indices, values, shape)
+    return torch.sparse_coo_tensor(indices, values, shape).coalesce()
 
 def main():
     parser = argparse.ArgumentParser(description='GNN Training Pipeline')
@@ -34,17 +34,25 @@ def main():
     parser.add_argument('--noise', type=float, default=0.0, help='Noise rate to add to the graph (0.0 to 1.0)')
     args = parser.parse_args()
 
+    model_dir = "best_models"
+    history_dir = "history"
+    os.makedirs(model_dir, exist_ok=True)
+    os.makedirs(history_dir, exist_ok=True)
+
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"--- Running {args.model} on {args.dataset.upper()} ---")
     print(f"--- Running on device: {device} ---")
 
+    is_pubmed = False
     if args.dataset == 'cora':
         data_path = "./cora/cora/"
     elif args.dataset == 'citeseer':
         data_path = "./citeseer/"
     else: 
         data_path = "pubmed"    # Load data
+        is_pubmed = True
 
-    # adj_gcn_raw should be the scipy sparse matrix from your utils
+    # use the load_data func to get all the required stuff
     adj_gcn_raw, adj_gat_raw, features, labels, train_mask, val_mask, test_mask, raw_adj = load_data(path=data_path, return_raw_adj=True)
 
     # Data to device
@@ -61,28 +69,28 @@ def main():
         if args.model == 'GCN':
             adj_gcn_raw = normalize_adjacency(raw_adj)
         elif args.model == 'GAT':
-            adj_gat_raw = (raw_adj + sp.eye(raw_adj.shape[0])).todense()
+            adj_gat_raw = (raw_adj + sp.eye(raw_adj.shape[0]))
  
     # Prepare Adjacency Tensor based on model
     if args.model == 'GCN':
         # Using your sparse conversion function
         adj_tensor = sparse_mx_to_torch_sparse_tensor(sp.coo_matrix(adj_gcn_raw)).to(device)
     elif args.model == 'GAT':
-        adj_tensor = torch.FloatTensor(adj_gat_raw).to(device)
+        adj_tensor = sparse_mx_to_torch_sparse_tensor(sp.coo_matrix(adj_gat_raw)).to(device)
     else:
         adj_tensor = None
 
     # Model Initialization
-    n_features = int(features.shape[1])
+    nfeat = int(features.shape[1])
     n_classes = int(labels.max().item()) + 1
     
     if args.model == 'MLP':
-        model = MLP(n_features, args.hidden, n_classes, args.dropout)
+        model = MLP(nfeat, args.hidden, n_classes, args.dropout)
     elif args.model == 'GCN':
-        model = GCN(n_features, args.hidden, n_classes, args.dropout)
+        model = GCN(nfeat, args.hidden, n_classes, args.dropout)
     elif args.model == 'GAT':
         # Keeping your GAT parameters
-        model = GAT(n_features, args.hidden, n_classes, args.dropout, alpha=0.2, nheads=args.heads)
+        model = GAT(nfeat, args.hidden, n_classes, args.dropout, alpha=0.2, nheads=args.heads, is_pubmed = is_pubmed)
 
     model.to(device)
     optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
@@ -93,8 +101,8 @@ def main():
     history = {'train_loss': [], 'train_acc': [], 'val_loss': [], 'val_acc': []}
 
     noise_suffix = f"_noise_{args.noise}" if args.noise > 0 else ""
-    checkpoint_path = f'best_{args.model.lower()}_{args.dataset}{noise_suffix}.pth'
-    history_filename = f'history_{args.model.lower()}_{args.dataset}{noise_suffix}.json'
+    checkpoint_path = os.path.join(model_dir, f'best_{args.model.lower()}_{args.dataset}{noise_suffix}.pth')
+    history_filename = os.path.join(history_dir, f'history_{args.model.lower()}_{args.dataset}{noise_suffix}.json')
 
     start_time = time.time()
 
