@@ -1,13 +1,13 @@
 import argparse
 import json
+import numpy as np
 import os
+import scipy.sparse as sp
 import time
 import torch
 import torch.optim as optim
-import scipy.sparse as sp
-import numpy as np
 
-from models import MLP, GCN, GAT
+from models import MLP, GCN, GAT, PyG_GCN, PyG_GAT
 from utils import load_data, accuracy, add_graph_noise, normalize_adjacency
 
 def sparse_mx_to_torch_sparse_tensor(sparse_mx):
@@ -22,7 +22,8 @@ def sparse_mx_to_torch_sparse_tensor(sparse_mx):
 
 def main():
     parser = argparse.ArgumentParser(description='GNN Training Pipeline')
-    parser.add_argument('--model', type=str, default='GCN', choices=['MLP', 'GCN', 'GAT'])
+    parser.add_argument('--model', type=str, default='GCN', choices=['MLP', 'GCN', 'GAT','PYG_GCN','PYG_GAT'],
+                        help='Model to use (MLP, GCN, GAT, PYG_GCN, PYG_GAT)')
     parser.add_argument('--dataset', type=str, default='cora', choices=['cora', 'citeseer','pubmed'],
                         help='Dataset to use (cora, citeseer or pubmed)')
     parser.add_argument('--epochs', type=int, default=200)
@@ -61,6 +62,9 @@ def main():
     train_mask = train_mask.to(device)
     val_mask = val_mask.to(device)
     test_mask = test_mask.to(device)
+    
+    adj_tensor = None
+    edge_index = None
 
     if args.noise > 0:
         print(f"Training with {args.noise*100}% of added noise")
@@ -72,14 +76,14 @@ def main():
             adj_gat_raw = (raw_adj + sp.eye(raw_adj.shape[0]))
  
     # Prepare Adjacency Tensor based on model
-    if args.model == 'GCN':
-        # Using your sparse conversion function
+    if 'GCN' in args.model:
         adj_tensor = sparse_mx_to_torch_sparse_tensor(sp.coo_matrix(adj_gcn_raw)).to(device)
-    elif args.model == 'GAT':
+    elif 'GAT' in args.model:
         adj_tensor = sparse_mx_to_torch_sparse_tensor(sp.coo_matrix(adj_gat_raw)).to(device)
-    else:
-        adj_tensor = None
 
+    if args.model.startswith('PYG_'):
+        edge_index = adj_tensor.indices()
+    
     # Model Initialization
     nfeat = int(features.shape[1])
     n_classes = int(labels.max().item()) + 1
@@ -91,12 +95,16 @@ def main():
     elif args.model == 'GAT':
         # Keeping your GAT parameters
         model = GAT(nfeat, args.hidden, n_classes, args.dropout, alpha=0.2, nheads=args.heads, is_pubmed = is_pubmed)
+    elif args.model == 'PYG_GCN':
+        model = PyG_GCN(nfeat, args.hidden, n_classes, args.dropout)
+    elif args.model == 'PYG_GAT':
+        model = PyG_GAT(nfeat, args.hidden, n_classes, args.dropout, alpha=0.2, nheads=args.heads)
 
     model.to(device)
     optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     criterion = torch.nn.NLLLoss()
 
-    # Training Loop (Using your logic)
+    # Training Loop 
     best_val_acc = 0
     history = {'train_loss': [], 'train_acc': [], 'val_loss': [], 'val_acc': []}
 
@@ -110,9 +118,10 @@ def main():
         model.train()
         optimizer.zero_grad()
         
-        # Integrated your is_mlp logic style here
         if args.model == 'MLP':
             output = model(features)
+        elif args.model.startswith('PYG_'):
+            output = model(features, edge_index) # use edge_index for PyG models
         else:
             output = model(features, adj_tensor)
             
@@ -127,6 +136,8 @@ def main():
         with torch.no_grad():
             if args.model == 'MLP':
                 output = model(features)
+            elif args.model.startswith('PYG_'):
+                output = model(features, edge_index)
             else:
                 output = model(features, adj_tensor)
             loss_val = criterion(output[val_mask], labels[val_mask])
@@ -156,7 +167,12 @@ def main():
         model.load_state_dict(torch.load(checkpoint_path, weights_only=True))
     model.eval()
     with torch.no_grad():
-        output = model(features) if args.model == 'MLP' else model(features, adj_tensor)
+        if args.model == 'MLP':
+            output = model(features)
+        elif args.model.startswith('PYG_'):
+            output = model(features, edge_index)
+        else:
+            output = model(features, adj_tensor)
         acc_test = accuracy(output[test_mask], labels[test_mask])
         print(f"FINAL TEST SET ACCURACY: {acc_test:.4f}")
 

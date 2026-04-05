@@ -105,6 +105,9 @@ def visualize_tsne(model, features, labels, model_name, adj=None, dataset = "Cor
     plt.figure(figsize=(10, 7))
     scatter = plt.scatter(out[:, 0], out[:, 1], c=labels.cpu().numpy(), 
                           cmap='rainbow', s=30, alpha=0.7)
-    plt.colorbar(scatter)
+
+    plt.grid(False)
+    plt.axis("off")
+    
     plt.title(f"t-SNE Embeddings - {model_name.upper()} - {dataset}")
     plt.show()

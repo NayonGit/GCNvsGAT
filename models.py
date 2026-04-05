@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch_geometric.nn import GCNConv, GATConv
 
 class MLP(nn.Module):
     def __init__(self, nfeat, nhid, n_classes, dropout):
@@ -170,3 +171,43 @@ def load_gat_model_autodetect(checkpoint_path, nfeat=1433, nclass=7, device='cpu
     # Load the weights
     model.load_state_dict(state_dict)
     return model.to(device)
+
+## down below we implement the same GCN and GAT architectures but using PyTorch Geometric for comparison
+class PyG_GCN(nn.Module):
+    """
+    GCN Model implemented with PyTorch Geometric.
+    """
+    def __init__(self, nfeat, nhid, n_classes, dropout):
+        super(PyG_GCN, self).__init__()
+        self.conv1 = GCNConv(nfeat, nhid)
+        self.conv2 = GCNConv(nhid, n_classes)
+        self.dropout = dropout
+
+    def forward(self, x, edge_index):
+        # x: [N, nfeat], edge_index: [2, E]
+        x = F.relu(self.conv1(x, edge_index))
+        x = F.dropout(x, self.dropout, training=self.training)
+        x = self.conv2(x, edge_index)
+        return F.log_softmax(x, dim=1)
+
+class PyG_GAT(nn.Module):
+    """
+    GAT Model implemented with PyTorch Geometric.
+    """
+    def __init__(self, nfeat, nhid, nclass, dropout, alpha, nheads):
+        super(PyG_GAT, self).__init__()
+        self.dropout = dropout
+
+        self.conv1 = GATConv(nfeat, nhid, heads=nheads, dropout=dropout, negative_slope=alpha)
+        self.conv2 = GATConv(nhid * nheads, nclass, heads=1, concat=False, 
+                             dropout=dropout, negative_slope=alpha)
+
+    def forward(self, x, edge_index):
+        # x: [N, nfeat], edge_index: [2, E]
+        x = F.dropout(x, self.dropout, training=self.training)
+        x = F.elu(self.conv1(x, edge_index))
+        
+        x = F.dropout(x, self.dropout, training=self.training)
+        x = self.conv2(x, edge_index)
+        
+        return F.log_softmax(x, dim=1)
