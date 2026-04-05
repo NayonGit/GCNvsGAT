@@ -1,10 +1,11 @@
 import numpy as np
-import scipy.sparse as sp
-import torch
 import os
 import pandas as pd
+import scipy.sparse as sp
+import torch
 
-#function for noise experiment
+
+# function for noise experiment
 def add_graph_noise(adj, noise_level=0.1):
     """
     Add random edges. 
@@ -50,7 +51,6 @@ def remove_graph_edges(adj, drop_rate=0.2):
 def normalize_adjacency(adj):
     """
     Returns the normalized adjacency matrix A_hat = D^-1/2 * (A + I) * D^-1/2
-    Exactly as per your notebook.
     """
     adj = sp.coo_matrix(adj)
     adj_tilde = adj + sp.eye(adj.shape[0])
@@ -164,7 +164,7 @@ def load_data(path="./cora/cora/", return_raw_adj=False):
     
     # Normalizations
     adj_norm = normalize_adjacency(adj)
-    adj_gat = (adj + sp.eye(adj.shape[0])).todense()
+    adj_gat = adj + sp.eye(adj.shape[0])
 
 
     if return_raw_adj:
